@@ -3,33 +3,219 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Stark SkyRadar AR</title>
+    <title>Stark HUD</title>
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
         body {
-            margin: 0;
-            padding: 0;
-            width: 600px;
-            height: 600px;
-            background-color: #000000; /* Pure black = transparent on the glasses */
-            color: #00f0ff;
-            font-family: monospace;
-            overflow: hidden;
-            user-select: none;
+            margin: 0; padding: 0; width: 600px; height: 600px;
+            background-color: #000000; color: #00f0ff;
+            font-family: monospace; overflow: hidden; user-select: none;
         }
-        canvas {
-            display: block;
-            width: 600px;
-            height: 600px;
-        }
+        canvas { display: block; width: 600px; height: 600px; }
     </style>
 </head>
 <body>
 
     <canvas id="mrbdCanvas" width="600" height="600"></canvas>
 
-    <script src="app.js"></script>
+    <script>
+        const canvas = document.getElementById('mrbdCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Global Layout Navigation: 'HUD' or 'MAP'
+        let currentMode = 'HUD'; 
+        
+        // Navigation Focus Targets: 0 = Slider, 1 = Center Screen, 2 = Bottom Button
+        let activeFocusNode = 1; 
+
+        // Live Telemetry Hardware Data
+        let userLat = null;
+        let userLon = null;
+        let headHeading = 0; // Compass (Yaw)
+        let headPitch = 0;   // Incline Angle (Beta)
+
+        let nearbyFlights = [];
+        let systemStatus = "ACQUIRING LINK...";
+        let squarePerimeterSide = 15; // Scan perimeter width in miles
+
+        // --- 1. RESILIENT AUTOMATIC SENSOR BINDING ---
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition((position) => {
+                userLat = position.coords.latitude;
+                userLon = position.coords.longitude;
+                systemStatus = "ONLINE";
+                fetchFlightData();
+            }, (err) => {
+                systemStatus = "GPS_OFFLINE";
+            }, { enableHighAccuracy: true, timeout: 10000 });
+        }
+
+        window.addEventListener('deviceorientation', (event) => {
+            // Safe alignment calculation for compass orientation shifts
+            if (event.alpha !== null) {
+                headHeading = (360 - event.alpha) % 360; 
+            }
+            // Direct vertical incline monitoring
+            if (event.beta !== null) {
+                headPitch = event.beta; 
+            }
+        }, true);
+
+        // --- 2. MULTI-AXIS HARDWARE KEYBOARD EVENT HANDLERS ---
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowUp' && activeFocusNode > 0) activeFocusNode--;
+            else if (e.key === 'ArrowDown' && activeFocusNode < 2) activeFocusNode++;
+            else if (e.key === 'ArrowRight' && activeFocusNode === 0) {
+                squarePerimeterSide = Math.min(squarePerimeterSide + 1, 50);
+                fetchFlightData();
+            } 
+            else if (e.key === 'ArrowLeft' && activeFocusNode === 0) {
+                squarePerimeterSide = Math.max(squarePerimeterSide - 1, 5);
+                fetchFlightData();
+            } 
+            else if (e.key === 'Enter' && activeFocusNode === 2) {
+                currentMode = (currentMode === 'HUD') ? 'MAP' : 'HUD';
+                activeFocusNode = 1; // Return focus back to targeting array
+            }
+        });
+
+        // --- 3. AVIATION DATA PIPELINE INTAKE ---
+        async function fetchFlightData() {
+            if (!userLat || !userLon) return;
+            const degreeDelta = (squarePerimeterSide / 2) / 69;
+            const url = `https://opensky-network.org/api/states/all?lamin=${userLat - degreeDelta}&lomin=${userLon - degreeDelta}&lamax=${userLat + degreeDelta}&lomax=${userLon + degreeDelta}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (data && data.states) {
+                    nearbyFlights = data.states.map(flight => ({
+                        callsign: flight[1].trim() || "UNK_TARGET",
+                        lon: flight[5],
+                        lat: flight[6],
+                        altitude: flight[7] ? Math.round(flight[7] * 3.28084) : 0
+                    })).filter(f => f.lat && f.lon);
+                } else {
+                    nearbyFlights = [];
+                }
+            } catch (e) {
+                console.log("Network limit hit/throttled");
+            }
+        }
+        setInterval(fetchFlightData, 12000);
+
+        // --- 4. GEOSPATIAL VECTOR AND INCLINE TRIGONOMETRY ---
+        function calculateTargetVectors(lat1, lon1, lat2, lon2, altFeet) {
+            const R = 3958.8; // Earth radius in miles
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const distanceMiles = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+
+            const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+            const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) - Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+            let bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+
+            // Incline Angle Math: Angle = Arctan(Altitude / Ground Distance)
+            const altMiles = altFeet / 5280;
+            const inclineDegrees = Math.atan2(altMiles, distanceMiles) * (180 / Math.PI);
+
+            return { distance: distanceMiles, bearing: bearing, incline: inclineDegrees };
+        }
+
+        // --- 5. COMPACT WAVEGUIDE GRAPHICS ENGINE ---
+        function runEngine() {
+            ctx.clearRect(0, 0, 600, 600);
+            const cx = 300, cy = 300;
+            const neonCyan = '#00f0ff';
+            const activeGold = '#ffb700';
+
+            // TOP NAVIGATION ELEMENT: Range Boundary Configurator Slider
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = (activeFocusNode === 0) ? activeGold : neonCyan;
+            ctx.strokeRect(50, 25, 500, 10);
+            
+            const handleX = 50 + (((squarePerimeterSide - 5) / 45) * 500);
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.fillRect(handleX - 8, 18, 16, 24);
+            
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText(`PERIMETER FOCUS: ${squarePerimeterSide}x${squarePerimeterSide} MI`, 50, 65);
+
+            if (currentMode === 'HUD') {
+                // ---------------- 3D GRAPHICAL HUD OVERLAY STATE ----------------
+                ctx.strokeStyle = neonCyan;
+                ctx.beginPath(); ctx.arc(cx, cy, 35, 0, Math.PI * 2); ctx.stroke(); // Center reticle sight
+
+                nearbyFlights.forEach(plane => {
+                    const vectors = calculateTargetVectors(userLat, userLon, plane.lat, plane.lon, plane.altitude);
+                    
+                    if (vectors.distance <= (squarePerimeterSide / 2)) {
+                        // Horizontal displacement calculations (Heading vs. Yaw)
+                        const relativeYawRad = (vectors.bearing - headHeading) * Math.PI / 180;
+                        
+                        // Vertical displacement calculations (Plane Incline vs. Face Pitch)
+                        const relativePitchDeg = vectors.incline - headPitch;
+
+                        const tx = cx + (Math.sin(relativeYawRad) * (vectors.distance / (squarePerimeterSide / 2))) * 240;
+                        const ty = cy - (relativePitchDeg * 8); // Scale multiplier: 8px vertical drop per degree difference
+
+                        // Draw targeting element boxes if targets match viewing dimensions safely
+                        if (tx > 20 && tx < 580 && ty > 80 && ty < 520) {
+                            ctx.strokeRect(tx - 10, ty - 10, 20, 20);
+                            ctx.font = 'bold 16px monospace';
+                            ctx.fillText(plane.callsign, tx + 15, ty - 5);
+                            ctx.font = '14px monospace';
+                            ctx.fillText(`${vectors.distance.toFixed(1)}mi | INC:${Math.round(vectors.incline)}°`, tx + 15, ty + 12);
+                            ctx.fillText(`${plane.altitude}ft`, tx + 15, ty + 26);
+                        }
+                    }
+                });
+            } 
+            else if (currentMode === 'MAP') {
+                // ---------------- 2D STRATEGIC FLAT GRID STATE ----------------
+                ctx.fillStyle = '#06131c'; // Solid deep navy fill blocks out ambient environment light
+                ctx.fillRect(40, 90, 520, 420);
+                
+                ctx.strokeStyle = '#002d3a';
+                ctx.lineWidth = 1;
+                for (let g = 90; g <= 510; g += 42) {
+                    ctx.beginPath(); ctx.moveTo(40, g); ctx.lineTo(560, g); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(g - 50, 90); ctx.lineTo(g - 50, 510); ctx.stroke();
+                }
+
+                // Center location map marker (HQ)
+                ctx.fillStyle = activeGold; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
+                ctx.font = 'bold 14px monospace'; ctx.fillText("HQ", cx + 12, cy - 8);
+
+                // Map coordinate positioning conversion
+                ctx.fillStyle = neonCyan;
+                nearbyFlights.forEach(plane => {
+                    const bounds = (squarePerimeterSide / 2) / 69;
+                    const mx = cx + ((plane.lon - userLon) / bounds) * 260;
+                    const my = cy - ((plane.lat - userLat) / bounds) * 210;
+                    
+                    if (mx >= 40 && mx <= 560 && my >= 90 && my <= 510) {
+                        ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill();
+                        ctx.font = 'bold 14px monospace'; ctx.fillText(plane.callsign, mx + 10, my + 4);
+                    }
+                });
+            }
+
+            // BOTTOM NAVIGATION ELEMENT: Switch Mode Toggle Component Button 
+            ctx.strokeStyle = (activeFocusNode === 2) ? activeGold : neonCyan;
+            ctx.fillStyle = (activeFocusNode === 2) ? 'rgba(0, 240, 255, 0.15)' : 'transparent';
+            ctx.fillRect(150, 530, 300, 45); ctx.strokeRect(150, 530, 300, 45);
+            
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.font = 'bold 18px monospace';
+            const buttonText = (currentMode === 'HUD') ? "OPEN TACTICAL MAP" : "CLOSE MAP / VIEW HUD";
+            ctx.fillText(buttonText, 300 - (ctx.measureText(buttonText).width / 2), 558);
+
+            requestAnimationFrame(runEngine);
+        }
+
+        runEngine();
+    </script>
 </body>
 </html>

@@ -38,22 +38,23 @@
         let gpsStatus = "SEARCHING";
 
         // 1. Core GPS Location Hook
+       // --- REPLACE ONLY THE GPS SECTION IN YOUR CURRENT CODE WITH THIS ---
         if (navigator.geolocation) {
             navigator.geolocation.watchPosition((position) => {
                 lat = position.coords.latitude.toFixed(6);
                 lon = position.coords.longitude.toFixed(6);
                 gpsStatus = "LOCKED";
             }, (err) => {
-                gpsStatus = `ERROR (${err.code})`;
+                gpsStatus = `ERROR (${err.code}) - RETRYING`;
             }, { 
                 enableHighAccuracy: true, 
-                timeout: 10000, 
-                maximumAge: 0 
+                timeout: 30000,        // 1. INCREASE TIMEOUT TO 30 SECONDS (Gives phone Bluetooth time to wake up)
+                maximumAge: 10000      // 2. ALLOW CACHED DATA (Uses a 10-second old location instead of breaking)
             });
         } else {
             gpsStatus = "UNSUPPORTED";
         }
-
+                
         // 2. Core Orientation (Compass & Tilt) Hooks
         window.addEventListener('deviceorientation', (event) => {
             // Raw alpha handling (Compass/Yaw)

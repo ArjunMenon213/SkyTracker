@@ -3,110 +3,268 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Stark Core Telemetry</title>
+    <title>Stark HUD</title>
     <style>
+        * { box-sizing: border-box; }
         body {
-            margin: 0;
-            padding: 0;
-            width: 600px;
-            height: 600px;
-            background-color: #000000; /* Pure black is transparent on the glasses */
-            color: #00f0ff;
-            font-family: monospace;
-            overflow: hidden;
+            margin: 0; padding: 0; width: 600px; height: 600px;
+            background-color: #000000; color: #00f0ff; font-family: monospace;
+            overflow: hidden; user-select: none;
         }
-        canvas {
-            display: block;
-            width: 600px;
-            height: 600px;
+        canvas { display: block; width: 600px; height: 600px; }
+        
+        /* Keep your exact boot loader styling */
+        #terminal { 
+            width: 600px; height: 600px; padding: 50px;
+            display: flex; flex-direction: column; justify-content: center; align-items: left;
+            font-size: 18px; line-height: 1.6; background-color: #000000;
         }
+        .blink { animation: blinker 1s linear infinite; color: #ffb700; }
+        @keyframes blinker { 50% { opacity: 0; } }
+        
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
 
-    <canvas id="telemetryCanvas" width="600" height="600"></canvas>
+    <div id="terminal">
+        <h2>STARK HUD SENSOR UTILITY</h2>
+        <hr style="border-color: #00f0ff; width: 500px; margin-left: 0;">
+        <p id="gps-status">GPS: LOCK REQUIRED</p>
+        <p id="imu-status">IMU: COMPASS CALIBRATION REQUIRED</p>
+        <br><br>
+        <p class="blink" id="action-prompt">PRESS [ENTER] GESTURE TO ENGAGE HANDSHAKE</p>
+    </div>
+
+    <canvas id="mrbdCanvas" width="600" height="600" class="hidden"></canvas>
 
     <script>
-        const canvas = document.getElementById('telemetryCanvas');
+        const canvas = document.getElementById('mrbdCanvas');
         const ctx = canvas.getContext('2d');
+        const terminal = document.getElementById('terminal');
 
-        // Core variables to isolate
-        let lat = "ACQUIRING...";
-        let lon = "ACQUIRING...";
-        let heading = 0;
-        let pitch = 0;
-        let gpsStatus = "SEARCHING";
+        // Engine Display Modes: 'HUD' or 'MAP'
+        let currentMode = 'HUD'; 
+        
+        // Navigation Layout Focus Node Target: 0 = Top Slider, 1 = Screen Center, 2 = Bottom Button
+        let activeFocusNode = 1; 
 
-        // 1. Core GPS Location Hook
-       // --- REPLACE ONLY THE GPS SECTION IN YOUR CURRENT CODE WITH THIS ---
-        if (navigator.geolocation) {
-            navigator.geolocation.watchPosition((position) => {
-                lat = position.coords.latitude.toFixed(6);
-                lon = position.coords.longitude.toFixed(6);
-                gpsStatus = "LOCKED";
-            }, (err) => {
-                gpsStatus = `ERROR (${err.code}) - RETRYING`;
-            }, { 
-                enableHighAccuracy: true, 
-                timeout: 30000,        // 1. INCREASE TIMEOUT TO 30 SECONDS (Gives phone Bluetooth time to wake up)
-                maximumAge: 10000      // 2. ALLOW CACHED DATA (Uses a 10-second old location instead of breaking)
-            });
-        } else {
-            gpsStatus = "UNSUPPORTED";
+        // Shared Sensor Data State variables
+        let userLat = null;
+        let userLon = null;
+        let headHeading = 0; // Yaw tracking orientation
+        let headPitch = 0;   // Incline angle elevation tracking (Beta)
+
+        let nearbyFlights = [];
+        let squarePerimeterSide = 15; // Customizable scan range side boundary in miles
+
+        // --- 1. PROVEN USER GESTURE INPUT INTERCEPTOR ENGINE ---
+        window.addEventListener('keydown', (e) => {
+            // Check if user is triggering initial system boot sequence handshake
+            if (!terminal.classList.contains('hidden')) {
+                if (e.key === 'Enter') {
+                    document.getElementById('action-prompt').innerText = "REQUESTING PERMISSIONS...";
+                    triggerHardwareHandshake();
+                }
+                return;
+            }
+
+            // Standard runtime HUD operational gesture map translations
+            if (e.key === 'ArrowUp' && activeFocusNode > 0) activeFocusNode--;
+            else if (e.key === 'ArrowDown' && activeFocusNode < 2) activeFocusNode++;
+            else if (e.key === 'ArrowRight' && activeFocusNode === 0) {
+                squarePerimeterSide = Math.min(squarePerimeterSide + 1, 50);
+                fetchFlightData();
+            } 
+            else if (e.key === 'ArrowLeft' && activeFocusNode === 0) {
+                squarePerimeterSide = Math.max(squarePerimeterSide - 1, 5);
+                fetchFlightData();
+            } 
+            else if (e.key === 'Enter' && activeFocusNode === 2) {
+                currentMode = (currentMode === 'HUD') ? 'MAP' : 'HUD';
+                activeFocusNode = 1; // Return focus cleanly back to the center matrix
+            }
+        });
+
+        // --- 2. YOUR EXACT HANDSHAKE GEOMETRIC SENSOR BINDINGS ---
+        async function triggerHardwareHandshake() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const permissionState = await DeviceOrientationEvent.requestPermission();
+                    if (permissionState === 'granted') {
+                        attachCompassListener();
+                    } else {
+                        document.getElementById('imu-status').innerText = "IMU: PERMISSION DENIED";
+                        return;
+                    }
+                } catch (error) {
+                    document.getElementById('imu-status').innerText = "IMU: PROMPT FAILED";
+                    return;
+                }
+            } else {
+                attachCompassListener();
+            }
+
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (pos) => {
+                        userLat = pos.coords.latitude;
+                        userLon = pos.coords.longitude;
+                        
+                        // Seamless System Switch: Swap configuration screens instantly when data links match
+                        if (!terminal.classList.contains('hidden')) {
+                            terminal.classList.add('hidden');
+                            canvas.classList.remove('hidden');
+                            runEngine(); // Advance rendering loop instantly
+                        }
+                        fetchFlightData();
+                    },
+                    (err) => {
+                        document.getElementById('gps-status').innerHTML = `GPS: <span style="color:#ff3333;">ERROR (${err.message})</span>`;
+                    },
+                    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+                );
+            } else {
+                document.getElementById('gps-status').innerText = "GPS: UNSUPPORTED";
+            }
         }
-                
-        // 2. Core Orientation (Compass & Tilt) Hooks
-        window.addEventListener('deviceorientation', (event) => {
-            // Raw alpha handling (Compass/Yaw)
-            if (event.alpha !== null) {
-                // Adjusting to make 0 North, 90 East, etc.
-                heading = Math.round((360 - event.alpha) % 360);
-            }
-            
-            // Raw beta handling (Pitch/Incline)
-            if (event.beta !== null) {
-                pitch = Math.round(event.beta);
-            }
-        }, true);
 
-        // 3. Simple Render Loop
-        function drawTelemetry() {
+        function attachCompassListener() {
+            window.addEventListener('deviceorientation', (event) => {
+                if (event.webkitCompassHeading !== undefined && event.webkitCompassHeading !== null) {
+                    headHeading = event.webkitCompassHeading;
+                } else if (event.alpha !== null) {
+                    headHeading = (360 - event.alpha) % 360; 
+                }
+                if (event.beta !== null) {
+                    headPitch = event.beta; // Pull tracking incline data parameters safely
+                }
+            }, true);
+        }
+
+        // --- 3. BOUNDING MATRIX AVIATION POLLING PIPELINE ---
+        async function fetchFlightData() {
+            if (!userLat || !userLon) return;
+            const degreeDelta = (squarePerimeterSide / 2) / 69;
+            const url = `https://opensky-network.org/api/states/all?lamin=${userLat - degreeDelta}&lomin=${userLon - degreeDelta}&lamax=${userLat + degreeDelta}&lomax=${userLon + degreeDelta}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (data && data.states) {
+                    nearbyFlights = data.states.map(flight => ({
+                        callsign: flight[1].trim() || "UNK_TRGT",
+                        lon: flight[5],
+                        lat: flight[6],
+                        altitude: flight[7] ? Math.round(flight[7] * 3.28084) : 0
+                    })).filter(f => f.lat && f.lon);
+                } else { nearbyFlights = []; }
+            } catch (e) { console.log("API pipeline busy"); }
+        }
+        setInterval(fetchFlightData, 12000);
+
+        // --- 4. 3D VECTOR MATH MODULATORS (Haversine Distance + Elevation Pitch Angle) ---
+        function calculateTargetVectors(lat1, lon1, lat2, lon2, altFeet) {
+            const R = 3958.8; 
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const distanceMiles = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+
+            const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+            const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) - Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+            let bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+
+            // Incline Angle: θ = Arctan(Altitude / Distance)
+            const altMiles = altFeet / 5280;
+            const inclineDegrees = Math.atan2(altMiles, distanceMiles) * (180 / Math.PI);
+
+            return { distance: distanceMiles, bearing: bearing, incline: inclineDegrees };
+        }
+
+        // --- 5. GRAPHICS ENGINE SYSTEM RENDERING PIPELINE ---
+        function runEngine() {
             ctx.clearRect(0, 0, 600, 600);
+            const cx = 300, cy = 300;
+            const cyan = '#00f0ff';
+            const gold = '#ffb700';
 
-            ctx.fillStyle = '#00f0ff';
-            ctx.strokeStyle = '#00f0ff';
+            // TOP SLIDER PANEL COMPONENT
             ctx.lineWidth = 2;
+            ctx.strokeStyle = (activeFocusNode === 0) ? gold : cyan;
+            ctx.strokeRect(50, 25, 500, 10);
+            const handleX = 50 + (((squarePerimeterSide - 5) / 45) * 500);
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.fillRect(handleX - 8, 18, 16, 24);
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText(`PERIMETER AXIS: ${squarePerimeterSide}x${squarePerimeterSide} MI`, 50, 65);
 
-            // Draw a basic fixed targeting reticle just to confirm the screen is rendering
-            ctx.beginPath();
-            ctx.arc(300, 300, 20, 0, Math.PI * 2);
-            ctx.moveTo(270, 300); ctx.lineTo(290, 300);
-            ctx.moveTo(310, 300); ctx.lineTo(330, 300);
-            ctx.stroke();
+            if (currentMode === 'HUD') {
+                // ---------------- HUD RENDER HOOK ----------------
+                ctx.strokeStyle = cyan;
+                ctx.beginPath(); ctx.arc(cx, cy, 35, 0, Math.PI * 2); ctx.stroke(); // Static central targeting reticle
 
-            // Render Text (Using large 20px font so it's easy to read in the waveguide)
-            ctx.font = 'bold 20px monospace';
-            
-            ctx.fillText(`[ STARK SYSTEMS CORE DATALINK ]`, 50, 80);
-            ctx.fillText(`-------------------------------`, 50, 110);
-            
-            ctx.fillText(`GPS LINK : ${gpsStatus}`, 50, 160);
-            ctx.fillText(`LATITUDE : ${lat}`, 50, 200);
-            ctx.fillText(`LONGITUDE: ${lon}`, 50, 240);
-            
-            ctx.fillText(`-------------------------------`, 50, 290);
-            
-            ctx.fillText(`HEADING  : ${heading}° (YAW)`, 50, 340);
-            ctx.fillText(`INCLINE  : ${pitch}° (PITCH)`, 50, 380);
+                nearbyFlights.forEach(plane => {
+                    const vectors = calculateTargetVectors(userLat, userLon, plane.lat, plane.lon, plane.altitude);
+                    
+                    if (vectors.distance <= (squarePerimeterSide / 2)) {
+                        // Horizontal layout tracking offset
+                        const relativeYawRad = (vectors.bearing - headHeading) * Math.PI / 180;
+                        
+                        // Vertical elevation alignment calculation tracking head pitch displacement
+                        const relativePitchDeg = vectors.incline - headPitch;
 
-            // Visual feedback: brief indicator at the bottom showing the frame is alive
-            ctx.font = '14px monospace';
-            ctx.fillText(`SYS_TICK: ${Date.now().toString().slice(-4)}`, 50, 520);
+                        const tx = cx + (Math.sin(relativeYawRad) * (vectors.distance / (squarePerimeterSide / 2))) * 240;
+                        const ty = cy - (relativePitchDeg * 8); // 8 pixels vertical shift tracking scalar per degree tilt offset
 
-            requestAnimationFrame(drawTelemetry);
+                        // Target Box rendering
+                        if (tx > 20 && tx < 580 && ty > 80 && ty < 520) {
+                            ctx.strokeRect(tx - 10, ty - 10, 20, 20);
+                            ctx.font = 'bold 16px monospace';
+                            ctx.fillText(plane.callsign, tx + 15, ty - 5);
+                            ctx.font = '14px monospace';
+                            ctx.fillText(`${vectors.distance.toFixed(1)}mi | INC:${Math.round(vectors.incline)}°`, tx + 15, ty + 12);
+                            ctx.fillText(`${plane.altitude}ft`, tx + 15, ty + 26);
+                        }
+                    }
+                });
+            } 
+            else if (currentMode === 'MAP') {
+                // ---------------- TACTICAL MAP PANEL RENDER HOOK ----------------
+                ctx.fillStyle = '#06131c'; ctx.fillRect(40, 90, 520, 420); // Solid map background
+                ctx.strokeStyle = '#002d3a'; ctx.lineWidth = 1;
+                for (let g = 90; g <= 510; g += 42) {
+                    ctx.beginPath(); ctx.moveTo(40, g); ctx.lineTo(560, g); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(g - 50, 90); ctx.lineTo(g - 50, 510); ctx.stroke();
+                }
+                ctx.fillStyle = gold; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill(); // Personal marker base
+                ctx.font = 'bold 14px monospace'; ctx.fillText("HQ", cx + 12, cy - 8);
+
+                ctx.fillStyle = cyan;
+                nearbyFlights.forEach(plane => {
+                    const bounds = (squarePerimeterSide / 2) / 69;
+                    const mx = cx + ((plane.lon - userLon) / bounds) * 260;
+                    const my = cy - ((plane.lat - userLat) / bounds) * 210;
+                    if (mx >= 40 && mx <= 560 && my >= 90 && my <= 510) {
+                        ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill();
+                        ctx.font = 'bold 14px monospace'; ctx.fillText(plane.callsign, mx + 10, my + 4);
+                    }
+                });
+            }
+
+            // BOTTOM NAVIGATION ACTION BUTTON MODULE
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = (activeFocusNode === 2) ? gold : cyan;
+            ctx.fillStyle = (activeFocusNode === 2) ? 'rgba(0, 240, 255, 0.15)' : 'transparent';
+            ctx.fillRect(150, 530, 300, 45); ctx.strokeRect(150, 530, 300, 45);
+            
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.font = 'bold 18px monospace';
+            const buttonLabel = (currentMode === 'HUD') ? "OPEN TACTICAL MAP" : "CLOSE MAP / VIEW HUD";
+            ctx.fillText(buttonLabel, 300 - (ctx.measureText(buttonLabel).width / 2), 558);
+
+            requestAnimationFrame(runEngine);
         }
-
-        drawTelemetry();
     </script>
 </body>
 </html>

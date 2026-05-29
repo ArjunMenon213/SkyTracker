@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>SkyTracker AR - Flight Radar</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            color: #00f0ff;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #video-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+
+        #video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* HUD Panels */
+        #hud-top {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 20px;
+            background: linear-gradient(to bottom, rgba(0, 20, 40, 0.8), transparent);
+            z-index: 100;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        #hud-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 20px;
+            background: linear-gradient(to top, rgba(0, 20, 40, 0.8), transparent);
+            z-index: 100;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .hud-stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            color: #00f0ff;
+        }
+
+        .hud-label {
+            color: #ffb700;
+            font-weight: bold;
+        }
+
+        .hud-value {
+            color: #00f0ff;
+            font-weight: bold;
+        }
+
+        #status-bar {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 20, 40, 0.9);
+            border: 2px solid #00f0ff;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 200;
+            min-width: 200px;
+        }
+
+        .status-line {
+            margin: 5px 0;
+        }
+
+        .status-ok {
+            color: #00ff00;
+        }
+
+        .status-warning {
+            color: #ffb700;
+        }
+
+        .status-error {
+            color: #ff3333;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 20, 40, 0.9);
+            border: 2px solid #00f0ff;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 200;
+        }
+
+        .control-row {
+            margin: 8px 0;
+        }
+
+        #permission-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            text-align: center;
+        }
+
+        #permission-content {
+            background: rgba(0, 20, 40, 0.95);
+            border: 2px solid #00f0ff;
+            padding: 40px;
+            border-radius: 10px;
+            max-width: 500px;
+        }
+
+        #permission-content h1 {
+            color: #ffb700;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+
+        #permission-content p {
+            color: #00f0ff;
+            margin: 15px 0;
+            font-size: 16px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+            justify-content: center;
+        }
+
+        button {
+            background: #00f0ff;
+            color: #000;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 5px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #ffb700;
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Permission Request Overlay -->
+    <div id="permission-overlay">
+        <div id="permission-content">
+            <h1>SKYTRACKER AR</h1>
+            <p>Flight Radar with Augmented Reality</p>
+            <hr style="border-color: #00f0ff; margin: 20px 0;">
+            <p style="margin-top: 30px;">This app requires:</p>
+            <ul style="text-align: left; color: #00f0ff; margin: 20px 0;">
+                <li>📷 Camera access</li>
+                <li>📍 GPS location</li>
+                <li>🧭 Compass & Gyroscope</li>
+            </ul>
+            <div class="button-group">
+                <button onclick="startApp()">START AR</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Container -->
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas-overlay"></canvas>
+
+        <!-- Top HUD Panel -->
+        <div id="hud-top">
+            <div class="hud-stat">
+                <span class="hud-label">LOCATION</span>
+                <span class="hud-value" id="gps-coords">--°, --°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">HEADING</span>
+                <span class="hud-value" id="heading-val">--°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">PITCH</span>
+                <span class="hud-value" id="pitch-val">--°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">AIRCRAFT DETECTED</span>
+                <span class="hud-value" id="aircraft-count">0</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div id="controls">
+            <div class="control-row"><span class="hud-label">RANGE</span></div>
+            <div class="control-row">
+                <span id="range-display">15mi</span>
+                <button onclick="adjustRange(-5)">-</button>
+                <button onclick="adjustRange(5)">+</button>
+            </div>
+            <div class="control-row" style="margin-top: 15px;">
+                <button onclick="toggleMode()" style="width: 100%;">TOGGLE MAP</button>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div id="status-bar">
+            <div class="status-line">
+                <span class="hud-label">STATUS</span>
+            </div>
+            <div class="status-line" id="gps-status"><span class="status-warning">GPS: Initializing</span></div>
+            <div class="status-line" id="camera-status"><span class="status-warning">CAM: Initializing</span></div>
+            <div class="status-line" id="sensor-status"><span class="status-warning">SENSOR: Initializing</span></div>
+            <div class="status-line" id="api-status"><span class="status-warning">API: Idle</span></div>
+        </div>
+
+        <!-- Bottom HUD Panel -->
+        <div id="hud-bottom">
+            <div id="selected-flight-info"></div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== STATE MANAGEMENT ====================
+        const state = {
+            userLat: null,
+            userLon: null,
+            userAlt: 0,
+            heading: 0,      // Compass heading (0-360)
+            pitch: 0,         // Device pitch (looking up/down)
+            roll: 0,          // Device roll (tilting left/right)
+            aircraftInView: [],
+            selectedAircraft: null,
+            rangeMax: 15,     // miles
+            mapMode: false,
+            sensorReady: false
+        };
+
+        // ==================== DOM ELEMENTS ====================
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas-overlay');
+        const ctx = canvas.getContext('2d');
+        const permissionOverlay = document.getElementById('permission-overlay');
+
+        // ==================== CANVAS SETUP ====================
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // ==================== PERMISSION & INITIALIZATION ====================
+        async function startApp() {
+            permissionOverlay.classList.add('hidden');
+            
+            try {
+                // Request camera
+                await requestCamera();
+                updateStatus('camera-status', 'CAM: Active', 'ok');
+            } catch (e) {
+                updateStatus('camera-status', 'CAM: Failed', 'error');
+            }
+
+            // Request GPS
+            requestGPS();
+
+            // Request device orientation
+            requestDeviceOrientation();
+
+            // Start rendering
+            renderLoop();
+
+            // Fetch flight data
+            fetchFlightData();
+            setInterval(fetchFlightData, 10000);
+        }
+
+        // ==================== CAMERA ACCESS ====================
+        async function requestCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: window.innerWidth },
+                        height: { ideal: window.innerHeight }
+                    }
+                });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
+            } catch (error) {
+                console.error('Camera error:', error);
+                throw error;
+            }
+        }
+
+        // ==================== GPS TRACKING ====================
+        function requestGPS() {
+            if (!navigator.geolocation) {
+                updateStatus('gps-status', 'GPS: Unavailable', 'error');
+                return;
+            }
+
+            navigator.geolocation.watchPosition(
+                (position) => {
+                    state.userLat = position.coords.latitude;
+                    state.userLon = position.coords.longitude;
+                    state.userAlt = position.coords.altitude || 0;
+                    
+                    document.getElementById('gps-coords').textContent = 
+                        `${state.userLat.toFixed(4)}°, ${state.userLon.toFixed(4)}°`;
+                    
+                    updateStatus('gps-status', `GPS: ${state.userLat.toFixed(6)}, ${state.userLon.toFixed(6)}`, 'ok');
+                },
+                (error) => {
+                    updateStatus('gps-status', `GPS: ${error.message}`, 'error');
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 5000,
+                    maximumAge: 0
+                }
+            );
+        }
+
+        // ==================== DEVICE ORIENTATION ====================
+        async function requestDeviceOrientation() {
+            try {
+                // iOS 13+ requires permission
+                if (typeof DeviceOrientationEvent !== 'undefined' && 
+                    typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    const permission = await DeviceOrientationEvent.requestPermission();
+                    if (permission !== 'granted') {
+                        updateStatus('sensor-status', 'SENSOR: Permission denied', 'error');
+                        return;
+                    }
+                }
+
+                window.addEventListener('deviceorientation', handleOrientation);
+                state.sensorReady = true;
+                updateStatus('sensor-status', 'SENSOR: Active', 'ok');
+            } catch (error) {
+                console.error('Orientation error:', error);
+                updateStatus('sensor-status', 'SENSOR: Failed', 'error');
+            }
+        }
+
+        function handleOrientation(event) {
+            // Alpha: 0-360 (compass)
+            // Beta: -180 to 180 (pitch, forward/backward)
+            // Gamma: -90 to 90 (roll, left/right)
+            
+            if (event.webkitCompassHeading !== undefined) {
+                // Safari/iOS
+                state.heading = event.webkitCompassHeading;
+            } else if (event.alpha !== null) {
+                // Standard API
+                state.heading = (360 - event.alpha) % 360;
+            }
+            
+            state.pitch = event.beta || 0;
+            state.roll = event.gamma || 0;
+
+            document.getElementById('heading-val').textContent = Math.round(state.heading) + '°';
+            document.getElementById('pitch-val').textContent = Math.round(state.pitch) + '°';
+        }
+
+        // ==================== FLIGHT DATA FETCHING ====================
+        async function fetchFlightData() {
+            if (!state.userLat || !state.userLon) return;
+
+            updateStatus('api-status', 'API: Fetching...', 'warning');
+
+            try {
+                const degreeDelta = (state.rangeMax / 2) / 69;
+                const url = `https://opensky-network.org/api/states/all?lamin=${state.userLat - degreeDelta}&lomin=${state.userLon - degreeDelta}&lamax=${state.userLat + degreeDelta}&lomax=${state.userLon + degreeDelta}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.states) {
+                    state.aircraftInView = data.states
+                        .map(flight => ({
+                            icao24: flight[0],
+                            callsign: (flight[1] || '').trim() || 'UNK',
+                            country: flight[2] || 'Unknown',
+                            lon: flight[5],
+                            lat: flight[6],
+                            altitude: flight[7] ? Math.round(flight[7] * 3.28084) : 0,
+                            velocity: flight[9] ? (flight[9] * 1.944).toFixed(0) : 0,
+                            heading: flight[10] ? Math.round(flight[10]) : 0,
+                            verticalRate: flight[11] ? (flight[11] * 196.85).toFixed(0) : 0
+                        }))
+                        .filter(f => f.lat && f.lon && f.lat !== null && f.lon !== null)
+                        .map(f => ({
+                            ...f,
+                            distance: getDistance(state.userLat, state.userLon, f.lat, f.lon),
+                            bearing: getBearing(state.userLat, state.userLon, f.lat, f.lon),
+                            elevation: getElevation(state.userAlt, f.altitude)
+                        }))
+                        .filter(f => f.distance <= state.rangeMax);
+
+                    document.getElementById('aircraft-count').textContent = state.aircraftInView.length;
+                    updateStatus('api-status', `API: ${state.aircraftInView.length} targets`, 'ok');
+                }
+            } catch (error) {
+                console.error('API error:', error);
+                updateStatus('api-status', 'API: Error', 'error');
+            }
+        }
+
+        // ==================== DISTANCE & BEARING CALCULATIONS ====================
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 3958.8; // miles
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + 
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+        }
+
+        function getBearing(lat1, lon1, lat2, lon2) {
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+            const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+                      Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+            return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        }
+
+        function getElevation(alt1Feet, alt2Feet) {
+            const altDiff = (alt2Feet - alt1Feet) / 5280; // convert to miles
+            const distance = state.aircraftInView[0]?.distance || 1;
+            return Math.atan2(altDiff, distance) * (180 / Math.PI);
+        }
+
+        // ==================== RENDERING ENGINE ====================
+        function renderLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (state.mapMode) {
+                drawMapView();
+            } else {
+                drawARView();
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        function drawARView() {
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const cyan = '#00f0ff';
+            const gold = '#ffb700';
+
+            // Draw central reticle
+            ctx.strokeStyle = cyan;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Draw crosshairs
+            ctx.beginPath();
+            ctx.moveTo(cx - 40, cy);
+            ctx.lineTo(cx - 20, cy);
+            ctx.moveTo(cx + 20, cy);
+            ctx.lineTo(cx + 40, cy);
+            ctx.moveTo(cx, cy - 40);
+            ctx.lineTo(cx, cy - 20);
+            ctx.moveTo(cx, cy + 20);
+            ctx.lineTo(cx, cy + 40);
+            ctx.stroke();
+
+            // Draw aircraft targets
+            state.aircraftInView.forEach((aircraft, idx) => {
+                const relativeYaw = (aircraft.bearing - state.heading + 360) % 360;
+                const relativePitch = aircraft.elevation - state.pitch;
+
+                // Map to screen coordinates
+                const screenX = cx + Math.sin((relativeYaw - 180) * Math.PI / 180) * 200;
+                const screenY = cy - relativePitch * 15;
+
+                // Check if on screen
+                if (screenX > 20 && screenX < canvas.width - 20 && 
+                    screenY > 80 && screenY < canvas.height - 80) {
+                    
+                    const isSelected = state.selectedAircraft === idx;
+                    ctx.strokeStyle = isSelected ? gold : cyan;
+                    ctx.fillStyle = isSelected ? 'rgba(255, 183, 0, 0.1)' : 'transparent';
+                    ctx.lineWidth = isSelected ? 3 : 2;
+
+                    // Draw target box
+                    ctx.fillRect(screenX - 15, screenY - 15, 30, 30);
+                    ctx.strokeRect(screenX - 15, screenY - 15, 30, 30);
+
+                    // Draw info
+                    ctx.fillStyle = ctx.strokeStyle;
+                    ctx.font = 'bold 14px Courier New';
+                    ctx.fillText(aircraft.callsign, screenX + 20, screenY - 10);
+                    
+                    ctx.font = '12px Courier New';
+                    ctx.fillText(`${aircraft.distance.toFixed(1)}mi`, screenX + 20, screenY + 5);
+                    ctx.fillText(`${aircraft.altitude}ft`, screenX + 20, screenY + 20);
+
+                    // Click handler
+                    aircraft.screenX = screenX;
+                    aircraft.screenY = screenY;
+                }
+            });
+        }
+
+        function drawMapView() {
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const cyan = '#00f0ff';
+            const gold = '#ffb700';
+
+            // Draw map background
+            ctx.fillStyle = 'rgba(0, 20, 40, 0.3)';
+            ctx.fillRect(40, 80, canvas.width - 80, canvas.height - 160);
+            
+            ctx.strokeStyle = 'rgba(0, 240, 255, 0.2)';
+            ctx.lineWidth = 1;
+            const gridSize = 50;
+            for (let x = 40; x < canvas.width - 40; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 80);
+                ctx.lineTo(x, canvas.height - 80);
+                ctx.stroke();
+            }
+            for (let y = 80; y < canvas.height - 80; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(40, y);
+                ctx.lineTo(canvas.width - 40, y);
+                ctx.stroke();
+            }
+
+            // Draw user position
+            ctx.fillStyle = gold;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw aircraft
+            ctx.fillStyle = cyan;
+            const mapScale = (state.rangeMax / 2) / 100;
+            
+            state.aircraftInView.forEach((aircraft, idx) => {
+                const dx = (aircraft.lon - state.userLon) / mapScale;
+                const dy = (aircraft.lat - state.userLat) / mapScale;
+                
+                const mapX = cx + dx;
+                const mapY = cy - dy;
+
+                if (mapX > 40 && mapX < canvas.width - 40 && 
+                    mapY > 80 && mapY < canvas.height - 80) {
+                    
+                    const isSelected = state.selectedAircraft === idx;
+                    ctx.fillStyle = isSelected ? gold : cyan;
+                    
+                    ctx.beginPath();
+                    ctx.arc(mapX, mapY, isSelected ? 10 : 6, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.fillStyle = cyan;
+                    ctx.font = 'bold 12px Courier New';
+                    ctx.fillText(aircraft.callsign, mapX + 10, mapY + 4);
+                    
+                    aircraft.screenX = mapX;
+                    aircraft.screenY = mapY;
+                }
+            });
+        }
+
+        // ==================== CONTROLS ====================
+        function adjustRange(delta) {
+            state.rangeMax = Math.max(5, Math.min(100, state.rangeMax + delta));
+            document.getElementById('range-display').textContent = state.rangeMax + 'mi';
+            fetchFlightData();
+        }
+
+        function toggleMode() {
+            state.mapMode = !state.mapMode;
+        }
+
+        // ==================== UI HELPERS ====================
+        function updateStatus(elementId, message, type) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = `<span class="status-${type}">${message}</span>`;
+        }
+
+        // ==================== CLICK HANDLER ====================
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            state.aircraftInView.forEach((aircraft, idx) => {
+                if (aircraft.screenX && aircraft.screenY) {
+                    const dist = Math.hypot(clickX - aircraft.screenX, clickY - aircraft.screenY);
+                    if (dist < 30) {
+                        state.selectedAircraft = state.selectedAircraft === idx ? null : idx;
+                        updateFlightInfo();
+                    }
+                }
+            });
+        });
+
+        function updateFlightInfo() {
+            const infoEl = document.getElementById('selected-flight-info');
+            if (state.selectedAircraft !== null) {
+                const flight = state.aircraftInView[state.selectedAircraft];
+                infoEl.innerHTML = `
+                    <div class="hud-stat">
+                        <span class="hud-label">${flight.callsign}</span>
+                        <span class="hud-value">${flight.country}</span>
+                    </div>
+                    <div class="hud-stat">
+                        <span class="hud-label">ALT</span>
+                        <span class="hud-value">${flight.altitude}ft</span>
+                    </div>
+                    <div class="hud-stat">
+                        <span class="hud-label">SPD</span>
+                        <span class="hud-value">${flight.velocity}kt</span>
+                    </div>
+                    <div class="hud-stat">
+                        <span class="hud-label">HDG</span>
+                        <span class="hud-value">${flight.heading}°</span>
+                    </div>
+                    <div class="hud-stat">
+                        <span class="hud-label">DIST</span>
+                        <span class="hud-value">${flight.distance.toFixed(1)}mi</span>
+                    </div>
+                `;
+            } else {
+                infoEl.innerHTML = '';
+            }
+        }
+
+        // ==================== START ====================
+        // Uncomment to auto-start without permission screen
+        // startApp();
+    </script>
+</body>
+</html>

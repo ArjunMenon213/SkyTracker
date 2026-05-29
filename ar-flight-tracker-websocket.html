@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>SkyTracker AR - WebSocket Edition</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            color: #00f0ff;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #video-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+
+        #video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #hud-top {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 20px;
+            background: linear-gradient(to bottom, rgba(0, 20, 40, 0.8), transparent);
+            z-index: 100;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        #hud-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 20px;
+            background: linear-gradient(to top, rgba(0, 20, 40, 0.8), transparent);
+            z-index: 100;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .hud-stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            color: #00f0ff;
+        }
+
+        .hud-label {
+            color: #ffb700;
+            font-weight: bold;
+        }
+
+        .hud-value {
+            color: #00f0ff;
+            font-weight: bold;
+        }
+
+        #ws-status {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 20, 40, 0.9);
+            border: 2px solid #00f0ff;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 200;
+            min-width: 220px;
+        }
+
+        .status-line {
+            margin: 5px 0;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-ok {
+            background: #00ff00;
+            color: #00ff00;
+        }
+
+        .status-warning {
+            background: #ffb700;
+            color: #ffb700;
+        }
+
+        .status-error {
+            background: #ff3333;
+            color: #ff3333;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 20, 40, 0.9);
+            border: 2px solid #00f0ff;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 200;
+        }
+
+        button {
+            background: #00f0ff;
+            color: #000;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin: 5px 0;
+        }
+
+        button:hover {
+            background: #ffb700;
+        }
+
+        #permission-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            text-align: center;
+        }
+
+        #permission-content {
+            background: rgba(0, 20, 40, 0.95);
+            border: 2px solid #00f0ff;
+            padding: 40px;
+            border-radius: 10px;
+            max-width: 500px;
+        }
+
+        #permission-content h1 {
+            color: #ffb700;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+
+        #permission-content p {
+            color: #00f0ff;
+            margin: 15px 0;
+            font-size: 16px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .flight-popup {
+            position: absolute;
+            background: rgba(0, 20, 40, 0.95);
+            border: 2px solid #00f0ff;
+            border-radius: 5px;
+            padding: 10px;
+            font-size: 11px;
+            white-space: nowrap;
+            z-index: 150;
+            pointer-events: none;
+            min-width: 140px;
+            transition: all 0.2s ease;
+        }
+
+        .flight-popup.selected {
+            border-color: #ffb700;
+            background: rgba(0, 20, 40, 0.99);
+            box-shadow: 0 0 20px rgba(255, 183, 0, 0.5);
+        }
+
+        .popup-title {
+            font-weight: bold;
+            color: #ffb700;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .popup-line {
+            color: #00f0ff;
+            margin: 3px 0;
+        }
+
+        .popup-line .label {
+            display: inline-block;
+            width: 40px;
+        }
+
+        .popup-line .value {
+            color: #ffb700;
+            font-weight: bold;
+        }
+
+        .flight-trail {
+            stroke: rgba(0, 240, 255, 0.3);
+            stroke-width: 1;
+            fill: none;
+            stroke-dasharray: 5,5;
+        }
+    </style>
+</head>
+<body>
+    <!-- Permission Overlay -->
+    <div id="permission-overlay">
+        <div id="permission-content">
+            <h1>🚁 SKYTRACKER AR</h1>
+            <p>Real-Time Flight Tracking + WebSocket Backend</p>
+            <hr style="border-color: #00f0ff; margin: 20px 0;">
+            <p style="margin-top: 30px;">This app requires:</p>
+            <ul style="text-align: left; color: #00f0ff; margin: 20px 0;">
+                <li>📷 Camera access</li>
+                <li>📍 GPS location (high accuracy)</li>
+                <li>🧭 Compass & Gyroscope</li>
+                <li>🌐 Backend connection</li>
+            </ul>
+            <p style="font-size: 12px; margin-top: 20px; color: #ffb700;">Backend URL:</p>
+            <input id="backend-url" type="text" value="ws://localhost:3000" style="width: 100%; padding: 8px; margin: 10px 0; background: rgba(0,240,255,0.1); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 5px;">
+            <div style="margin-top: 30px;">
+                <button onclick="startApp()" style="width: 100%; background: #00f0ff; padding: 12px;">START AR</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Container -->
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas-overlay"></canvas>
+        <div id="popups-container"></div>
+
+        <!-- HUD Top -->
+        <div id="hud-top">
+            <div class="hud-stat">
+                <span class="hud-label">LOCATION</span>
+                <span class="hud-value" id="gps-coords">--°, --°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">HEADING</span>
+                <span class="hud-value" id="heading-val">--°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">PITCH</span>
+                <span class="hud-value" id="pitch-val">--°</span>
+            </div>
+            <div class="hud-stat">
+                <span class="hud-label">AIRCRAFT IN VIEW</span>
+                <span class="hud-value" id="aircraft-count">0</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div id="controls">
+            <div style="margin-bottom: 10px;">
+                <span class="hud-label">BACKEND</span><br>
+                <span id="backend-status" style="color: #ffb700; font-size: 10px;">Connecting...</span>
+            </div>
+            <button onclick="toggleMode()" style="width: 100%;">TOGGLE MAP</button>
+        </div>
+
+        <!-- WebSocket Status -->
+        <div id="ws-status">
+            <div class="status-line">
+                <span class="hud-label">STATUS</span>
+            </div>
+            <div class="status-line" id="ws-conn-status">
+                <span class="status-dot status-warning"></span>
+                <span>Connecting...</span>
+            </div>
+            <div class="status-line" id="gps-status">
+                <span class="status-dot status-warning"></span>
+                <span>GPS: Waiting</span>
+            </div>
+            <div class="status-line" id="sensor-status">
+                <span class="status-dot status-warning"></span>
+                <span>Sensor: Waiting</span>
+            </div>
+            <div class="status-line" id="flight-count">
+                <span class="status-dot status-ok"></span>
+                <span id="flight-count-text">Flights: 0</span>
+            </div>
+        </div>
+
+        <!-- HUD Bottom -->
+        <div id="hud-bottom">
+            <div id="selected-flight-info"></div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== STATE ====================
+        const state = {
+            userLat: null,
+            userLon: null,
+            userAlt: 0,
+            heading: 0,
+            pitch: 0,
+            roll: 0,
+            aircraftInView: new Map(),
+            selectedAircraft: null,
+            mapMode: false,
+            ws: null,
+            wsConnected: false,
+            prevPositions: new Map(),
+            targetPositions: new Map(),
+            animationProgress: 0
+        };
+
+        // ==================== DOM ====================
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas-overlay');
+        const ctx = canvas.getContext('2d');
+        const permissionOverlay = document.getElementById('permission-overlay');
+        const popupsContainer = document.getElementById('popups-container');
+
+        // ==================== CANVAS ====================
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // ==================== APP START ====================
+        async function startApp() {
+            permissionOverlay.classList.add('hidden');
+            const backendUrl = document.getElementById('backend-url').value;
+            
+            await requestCamera();
+            requestGPS();
+            requestDeviceOrientation();
+            connectWebSocket(backendUrl);
+
+            renderLoop();
+        }
+
+        // ==================== CAMERA ====================
+        async function requestCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                });
+                video.srcObject = stream;
+                await new Promise(resolve => {
+                    video.onloadedmetadata = resolve;
+                });
+                video.play();
+            } catch (error) {
+                console.error('Camera error:', error);
+                alert('Camera access denied');
+            }
+        }
+
+        // ==================== GPS ====================
+        function requestGPS() {
+            if (!navigator.geolocation) {
+                updateStatusDot('gps-status', 'error', 'GPS: Unavailable');
+                return;
+            }
+
+            navigator.geolocation.watchPosition(
+                (position) => {
+                    state.userLat = position.coords.latitude;
+                    state.userLon = position.coords.longitude;
+                    state.userAlt = position.coords.altitude || 0;
+
+                    document.getElementById('gps-coords').textContent = 
+                        `${state.userLat.toFixed(4)}°, ${state.userLon.toFixed(4)}°`;
+                    
+                    updateStatusDot('gps-status', 'ok', `GPS: Lock`);
+
+                    // Send location to backend
+                    if (state.ws && state.wsConnected) {
+                        state.ws.send(JSON.stringify({
+                            type: 'location_update',
+                            latitude: state.userLat,
+                            longitude: state.userLon,
+                            altitude: state.userAlt,
+                            heading: state.heading,
+                            pitch: state.pitch
+                        }));
+                    }
+                },
+                (error) => {
+                    updateStatusDot('gps-status', 'error', `GPS: ${error.message}`);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        }
+
+        // ==================== ORIENTATION ====================
+        async function requestDeviceOrientation() {
+            try {
+                if (typeof DeviceOrientationEvent !== 'undefined' && 
+                    typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    const permission = await DeviceOrientationEvent.requestPermission();
+                    if (permission !== 'granted') {
+                        updateStatusDot('sensor-status', 'error', 'Sensor: Denied');
+                        return;
+                    }
+                }
+
+                window.addEventListener('deviceorientation', handleOrientation);
+                updateStatusDot('sensor-status', 'ok', 'Sensor: Active');
+            } catch (error) {
+                updateStatusDot('sensor-status', 'error', 'Sensor: Failed');
+            }
+        }
+
+        function handleOrientation(event) {
+            if (event.webkitCompassHeading !== undefined) {
+                state.heading = event.webkitCompassHeading;
+            } else if (event.alpha !== null) {
+                state.heading = (360 - event.alpha) % 360;
+            }
+            
+            state.pitch = event.beta || 0;
+            state.roll = event.gamma || 0;
+
+            document.getElementById('heading-val').textContent = Math.round(state.heading) + '°';
+            document.getElementById('pitch-val').textContent = Math.round(state.pitch) + '°';
+        }
+
+        // ==================== WEBSOCKET ====================
+        function connectWebSocket(url) {
+            try {
+                state.ws = new WebSocket(url);
+
+                state.ws.onopen = () => {
+                    state.wsConnected = true;
+                    updateStatusDot('ws-conn-status', 'ok', 'Connected to Backend');
+                    document.getElementById('backend-status').textContent = '✅ Connected';
+                    console.log('✅ WebSocket connected');
+                };
+
+                state.ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'flight_update') {
+                        processFlightUpdate(data);
+                    } else if (data.type === 'connection_confirmed') {
+                        console.log('Backend confirmed connection');
+                    }
+                };
+
+                state.ws.onclose = () => {
+                    state.wsConnected = false;
+                    updateStatusDot('ws-conn-status', 'error', 'Disconnected from Backend');
+                    document.getElementById('backend-status').textContent = '❌ Disconnected';
+                    console.log('❌ WebSocket disconnected');
+                    setTimeout(() => connectWebSocket(url), 3000); // Reconnect
+                };
+
+                state.ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatusDot('ws-conn-status', 'error', 'Connection Error');
+                };
+            } catch (error) {
+                console.error('Failed to connect WebSocket:', error);
+                updateStatusDot('ws-conn-status', 'error', 'Connection Failed');
+            }
+        }
+
+        // ==================== FLIGHT UPDATE ====================
+        function processFlightUpdate(data) {
+            state.aircraftInView.clear();
+            state.targetPositions.clear();
+
+            data.flights.forEach((flight) => {
+                // Store current position
+                if (!state.prevPositions.has(flight.icao24)) {
+                    state.prevPositions.set(flight.icao24, {
+                        screenX: window.innerWidth / 2,
+                        screenY: window.innerHeight / 2,
+                        timestamp: Date.now()
+                    });
+                }
+
+                // Calculate screen position
+                const screenPos = calculateScreenPosition(flight);
+                state.targetPositions.set(flight.icao24, screenPos);
+                
+                state.aircraftInView.set(flight.icao24, flight);
+            });
+
+            document.getElementById('aircraft-count').textContent = data.flights.length;
+            document.getElementById('flight-count-text').textContent = `Flights: ${data.flights.length}`;
+        }
+
+        function calculateScreenPosition(aircraft) {
+            const cx = window.innerWidth / 2;
+            const cy = window.innerHeight / 2;
+
+            const relativeYaw = (aircraft.bearing - state.heading + 360) % 360;
+            const relativePitch = aircraft.elevation - state.pitch;
+
+            const screenX = cx + Math.sin((relativeYaw - 180) * Math.PI / 180) * 200;
+            const screenY = cy - relativePitch * 15;
+
+            return {
+                screenX,
+                screenY,
+                onScreen: screenX > 20 && screenX < window.innerWidth - 20 && 
+                         screenY > 80 && screenY < window.innerHeight - 80
+            };
+        }
+
+        // ==================== SMOOTH ANIMATION ====================
+        function interpolatePositions(progress) {
+            state.aircraftInView.forEach((aircraft, icao24) => {
+                if (!state.prevPositions.has(icao24)) {
+                    state.prevPositions.set(icao24, state.targetPositions.get(icao24));
+                }
+
+                const prev = state.prevPositions.get(icao24);
+                const target = state.targetPositions.get(icao24);
+
+                if (prev && target) {
+                    aircraft.screenX = prev.screenX + (target.screenX - prev.screenX) * progress;
+                    aircraft.screenY = prev.screenY + (target.screenY - prev.screenY) * progress;
+                }
+            });
+        }
+
+        // ==================== RENDERING ====================
+        let lastUpdateTime = Date.now();
+
+        function renderLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Calculate animation progress (smooth 10-second interpolation)
+            const now = Date.now();
+            const timeSinceUpdate = (now - lastUpdateTime) % 10000;
+            const progress = Math.min(timeSinceUpdate / 8000, 1); // 8 second animation window
+
+            interpolatePositions(progress);
+            updateFlightPopups();
+
+            if (state.mapMode) {
+                drawMapView();
+            } else {
+                drawARView();
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        function drawARView() {
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const cyan = '#00f0ff';
+            const gold = '#ffb700';
+
+            // Reticle
+            ctx.strokeStyle = cyan;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Crosshairs
+            ctx.beginPath();
+            ctx.moveTo(cx - 40, cy);
+            ctx.lineTo(cx - 20, cy);
+            ctx.moveTo(cx + 20, cy);
+            ctx.lineTo(cx + 40, cy);
+            ctx.moveTo(cx, cy - 40);
+            ctx.lineTo(cx, cy - 20);
+            ctx.moveTo(cx, cy + 20);
+            ctx.lineTo(cx, cy + 40);
+            ctx.stroke();
+
+            // Aircraft
+            state.aircraftInView.forEach((aircraft, idx) => {
+                if (!aircraft.screenX || !aircraft.screenY) return;
+                if (!calculateScreenPosition(aircraft).onScreen) return;
+
+                const isSelected = state.selectedAircraft === idx;
+                ctx.strokeStyle = isSelected ? gold : cyan;
+                ctx.fillStyle = isSelected ? 'rgba(255, 183, 0, 0.1)' : 'transparent';
+                ctx.lineWidth = isSelected ? 3 : 2;
+
+                ctx.fillRect(aircraft.screenX - 15, aircraft.screenY - 15, 30, 30);
+                ctx.strokeRect(aircraft.screenX - 15, aircraft.screenY - 15, 30, 30);
+            });
+        }
+
+        function drawMapView() {
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const cyan = '#00f0ff';
+            const gold = '#ffb700';
+
+            ctx.fillStyle = 'rgba(0, 20, 40, 0.3)';
+            ctx.fillRect(40, 80, canvas.width - 80, canvas.height - 160);
+            
+            ctx.strokeStyle = 'rgba(0, 240, 255, 0.2)';
+            ctx.lineWidth = 1;
+            const gridSize = 50;
+            for (let x = 40; x < canvas.width - 40; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 80);
+                ctx.lineTo(x, canvas.height - 80);
+                ctx.stroke();
+            }
+            for (let y = 80; y < canvas.height - 80; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(40, y);
+                ctx.lineTo(canvas.width - 40, y);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = gold;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Aircraft on map
+            state.aircraftInView.forEach((aircraft) => {
+                if (!state.userLat || !state.userLon) return;
+
+                const mapScale = 50 / 100;
+                const dx = (aircraft.longitude - state.userLon) / mapScale;
+                const dy = (aircraft.latitude - state.userLat) / mapScale;
+
+                const mapX = cx + dx;
+                const mapY = cy - dy;
+
+                if (mapX > 40 && mapX < canvas.width - 40 && mapY > 80 && mapY < canvas.height - 80) {
+                    ctx.fillStyle = cyan;
+                    ctx.beginPath();
+                    ctx.arc(mapX, mapY, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+        }
+
+        // ==================== POPUPS ====================
+        function updateFlightPopups() {
+            popupsContainer.innerHTML = '';
+
+            let idx = 0;
+            state.aircraftInView.forEach((aircraft, icao24) => {
+                if (!aircraft.screenX || !aircraft.screenY) return;
+
+                const isSelected = state.selectedAircraft === icao24;
+                
+                const popup = document.createElement('div');
+                popup.className = `flight-popup ${isSelected ? 'selected' : ''}`;
+                popup.style.left = (aircraft.screenX + 20) + 'px';
+                popup.style.top = (aircraft.screenY - 40) + 'px';
+                popup.style.cursor = 'pointer';
+
+                popup.innerHTML = `
+                    <div class="popup-title">${aircraft.callsign}</div>
+                    <div class="popup-line"><span class="label">ALT:</span> <span class="value">${(aircraft.barometricAltitude * 3.28084).toFixed(0)}ft</span></div>
+                    <div class="popup-line"><span class="label">SPD:</span> <span class="value">${(aircraft.velocity * 1.944).toFixed(0)}kt</span></div>
+                    <div class="popup-line"><span class="label">HDG:</span> <span class="value">${aircraft.trueTrack ? Math.round(aircraft.trueTrack) : '--'}°</span></div>
+                    <div class="popup-line"><span class="label">DIS:</span> <span class="value">${aircraft.distance.toFixed(1)}mi</span></div>
+                `;
+
+                popup.addEventListener('click', () => {
+                    state.selectedAircraft = state.selectedAircraft === icao24 ? null : icao24;
+                });
+
+                popupsContainer.appendChild(popup);
+                idx++;
+            });
+        }
+
+        // ==================== CONTROLS ====================
+        function toggleMode() {
+            state.mapMode = !state.mapMode;
+        }
+
+        function updateStatusDot(elementId, type, text) {
+            const el = document.getElementById(elementId);
+            const dotClass = type === 'ok' ? 'status-ok' : type === 'warning' ? 'status-warning' : 'status-error';
+            el.innerHTML = `<span class="status-dot ${dotClass}"></span><span>${text}</span>`;
+        }
+
+        // ==================== CLICK HANDLER ====================
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            state.aircraftInView.forEach((aircraft, icao24) => {
+                if (aircraft.screenX && aircraft.screenY) {
+                    const dist = Math.hypot(clickX - aircraft.screenX, clickY - aircraft.screenY);
+                    if (dist < 30) {
+                        state.selectedAircraft = state.selectedAircraft === icao24 ? null : icao24;
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

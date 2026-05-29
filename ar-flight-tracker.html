@@ -97,10 +97,13 @@
             font-size: 12px;
             z-index: 200;
             min-width: 200px;
+            max-height: 200px;
+            overflow-y: auto;
         }
 
         .status-line {
             margin: 5px 0;
+            word-break: break-word;
         }
 
         .status-ok {
@@ -171,6 +174,7 @@
             gap: 10px;
             margin-top: 30px;
             justify-content: center;
+            flex-wrap: wrap;
         }
 
         button {
@@ -196,6 +200,34 @@
         .hidden {
             display: none !important;
         }
+
+        #debug-log {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 20, 40, 0.9);
+            border: 1px solid #00f0ff;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 10px;
+            max-width: 300px;
+            max-height: 150px;
+            overflow-y: auto;
+            z-index: 50;
+        }
+
+        .debug-msg {
+            color: #00f0ff;
+            margin: 2px 0;
+        }
+
+        .debug-error {
+            color: #ff3333;
+        }
+
+        .debug-success {
+            color: #00ff00;
+        }
     </style>
 </head>
 <body>
@@ -213,9 +245,13 @@
             </ul>
             <div class="button-group">
                 <button onclick="startApp()">START AR</button>
+                <button onclick="startAppDebug()">DEBUG MODE</button>
             </div>
         </div>
     </div>
+
+    <!-- Debug Log -->
+    <div id="debug-log"></div>
 
     <!-- Video Container -->
     <div id="video-container">
@@ -273,19 +309,41 @@
     </div>
 
     <script>
+        // ==================== DEBUG MODE ====================
+        const debugMode = new URLSearchParams(window.location.search).has('debug');
+        
+        function debugLog(message, type = 'msg') {
+            const logEl = document.getElementById('debug-log');
+            const msgEl = document.createElement('div');
+            msgEl.className = `debug-${type}`;
+            msgEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logEl.appendChild(msgEl);
+            logEl.scrollTop = logEl.scrollHeight;
+            if (logEl.children.length > 20) {
+                logEl.removeChild(logEl.firstChild);
+            }
+            if (debugMode) console.log(message);
+        }
+
+        function startAppDebug() {
+            debugLog('Debug mode enabled', 'success');
+            startApp();
+        }
+
         // ==================== STATE MANAGEMENT ====================
         const state = {
             userLat: null,
             userLon: null,
             userAlt: 0,
-            heading: 0,      // Compass heading (0-360)
-            pitch: 0,         // Device pitch (looking up/down)
-            roll: 0,          // Device roll (tilting left/right)
+            heading: 0,
+            pitch: 0,
+            roll: 0,
             aircraftInView: [],
             selectedAircraft: null,
-            rangeMax: 15,     // miles
+            rangeMax: 15,
             mapMode: false,
-            sensorReady: false
+            sensorReady: false,
+            apiSource: 'opensky' // fallback tracker
         };
 
         // ==================== DOM ELEMENTS ====================
@@ -305,27 +363,25 @@
         // ==================== PERMISSION & INITIALIZATION ====================
         async function startApp() {
             permissionOverlay.classList.add('hidden');
+            debugLog('App started', 'success');
             
             try {
-                // Request camera
                 await requestCamera();
                 updateStatus('camera-status', 'CAM: Active', 'ok');
+                debugLog('Camera initialized', 'success');
             } catch (e) {
                 updateStatus('camera-status', 'CAM: Failed', 'error');
+                debugLog(`Camera error: ${e.message}`, 'error');
             }
 
-            // Request GPS
             requestGPS();
-
-            // Request device orientation
             requestDeviceOrientation();
 
-            // Start rendering
             renderLoop();
 
-            // Fetch flight data
+            // Fetch flight data with retry logic
             fetchFlightData();
-            setInterval(fetchFlightData, 10000);
+            setInterval(fetchFlightData, 15000);
         }
 
         // ==================== CAMERA ACCESS ====================
@@ -346,7 +402,7 @@
                     };
                 });
             } catch (error) {
-                console.error('Camera error:', error);
+                debugLog(`Camera error: ${error.message}`, 'error');
                 throw error;
             }
         }
@@ -355,6 +411,7 @@
         function requestGPS() {
             if (!navigator.geolocation) {
                 updateStatus('gps-status', 'GPS: Unavailable', 'error');
+                debugLog('Geolocation not supported', 'error');
                 return;
             }
 
@@ -367,14 +424,16 @@
                     document.getElementById('gps-coords').textContent = 
                         `${state.userLat.toFixed(4)}°, ${state.userLon.toFixed(4)}°`;
                     
-                    updateStatus('gps-status', `GPS: ${state.userLat.toFixed(6)}, ${state.userLon.toFixed(6)}`, 'ok');
+                    updateStatus('gps-status', `GPS: Lock`, 'ok');
+                    debugLog(`GPS: ${state.userLat.toFixed(6)}, ${state.userLon.toFixed(6)}`, 'success');
                 },
                 (error) => {
                     updateStatus('gps-status', `GPS: ${error.message}`, 'error');
+                    debugLog(`GPS error: ${error.message}`, 'error');
                 },
                 {
                     enableHighAccuracy: true,
-                    timeout: 5000,
+                    timeout: 10000,
                     maximumAge: 0
                 }
             );
@@ -383,12 +442,12 @@
         // ==================== DEVICE ORIENTATION ====================
         async function requestDeviceOrientation() {
             try {
-                // iOS 13+ requires permission
                 if (typeof DeviceOrientationEvent !== 'undefined' && 
                     typeof DeviceOrientationEvent.requestPermission === 'function') {
                     const permission = await DeviceOrientationEvent.requestPermission();
                     if (permission !== 'granted') {
                         updateStatus('sensor-status', 'SENSOR: Permission denied', 'error');
+                        debugLog('Sensor permission denied', 'error');
                         return;
                     }
                 }
@@ -396,22 +455,17 @@
                 window.addEventListener('deviceorientation', handleOrientation);
                 state.sensorReady = true;
                 updateStatus('sensor-status', 'SENSOR: Active', 'ok');
+                debugLog('Device orientation active', 'success');
             } catch (error) {
-                console.error('Orientation error:', error);
+                debugLog(`Sensor error: ${error.message}`, 'error');
                 updateStatus('sensor-status', 'SENSOR: Failed', 'error');
             }
         }
 
         function handleOrientation(event) {
-            // Alpha: 0-360 (compass)
-            // Beta: -180 to 180 (pitch, forward/backward)
-            // Gamma: -90 to 90 (roll, left/right)
-            
             if (event.webkitCompassHeading !== undefined) {
-                // Safari/iOS
                 state.heading = event.webkitCompassHeading;
             } else if (event.alpha !== null) {
-                // Standard API
                 state.heading = (360 - event.alpha) % 360;
             }
             
@@ -424,46 +478,148 @@
 
         // ==================== FLIGHT DATA FETCHING ====================
         async function fetchFlightData() {
-            if (!state.userLat || !state.userLon) return;
+            if (!state.userLat || !state.userLon) {
+                debugLog('GPS not locked, skipping API call', 'warning');
+                return;
+            }
 
             updateStatus('api-status', 'API: Fetching...', 'warning');
+            debugLog('Fetching flight data...', 'msg');
 
             try {
                 const degreeDelta = (state.rangeMax / 2) / 69;
-                const url = `https://opensky-network.org/api/states/all?lamin=${state.userLat - degreeDelta}&lomin=${state.userLon - degreeDelta}&lamax=${state.userLat + degreeDelta}&lomax=${state.userLon + degreeDelta}`;
+                
+                // Try multiple endpoints with CORS proxies
+                const endpoints = [
+                    {
+                        url: `https://cors-anywhere.herokuapp.com/https://opensky-network.org/api/states/all?lamin=${state.userLat - degreeDelta}&lomin=${state.userLon - degreeDelta}&lamax=${state.userLat + degreeDelta}&lomax=${state.userLon + degreeDelta}`,
+                        name: 'OpenSky (CORS)',
+                        parser: parseOpenSkyAPI
+                    },
+                    {
+                        url: `https://opensky-network.org/api/states/all?lamin=${state.userLat - degreeDelta}&lomin=${state.userLon - degreeDelta}&lamax=${state.userLat + degreeDelta}&lomax=${state.userLon + degreeDelta}`,
+                        name: 'OpenSky (Direct)',
+                        parser: parseOpenSkyAPI
+                    },
+                    {
+                        url: `https://api.adsbexchange.com/v2/lat/${state.userLat}/lon/${state.userLon}/dist/${state.rangeMax}`,
+                        name: 'ADSBExchange',
+                        parser: parseADSBExchangeAPI
+                    }
+                ];
 
-                const response = await fetch(url);
-                const data = await response.json();
+                let success = false;
+                for (const endpoint of endpoints) {
+                    try {
+                        debugLog(`Trying ${endpoint.name}...`, 'msg');
+                        const response = await fetch(endpoint.url, {
+                            mode: 'cors',
+                            timeout: 8000
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
 
-                if (data.states) {
-                    state.aircraftInView = data.states
-                        .map(flight => ({
-                            icao24: flight[0],
-                            callsign: (flight[1] || '').trim() || 'UNK',
-                            country: flight[2] || 'Unknown',
-                            lon: flight[5],
-                            lat: flight[6],
-                            altitude: flight[7] ? Math.round(flight[7] * 3.28084) : 0,
-                            velocity: flight[9] ? (flight[9] * 1.944).toFixed(0) : 0,
-                            heading: flight[10] ? Math.round(flight[10]) : 0,
-                            verticalRate: flight[11] ? (flight[11] * 196.85).toFixed(0) : 0
-                        }))
-                        .filter(f => f.lat && f.lon && f.lat !== null && f.lon !== null)
-                        .map(f => ({
-                            ...f,
-                            distance: getDistance(state.userLat, state.userLon, f.lat, f.lon),
-                            bearing: getBearing(state.userLat, state.userLon, f.lat, f.lon),
-                            elevation: getElevation(state.userAlt, f.altitude)
-                        }))
-                        .filter(f => f.distance <= state.rangeMax);
-
-                    document.getElementById('aircraft-count').textContent = state.aircraftInView.length;
-                    updateStatus('api-status', `API: ${state.aircraftInView.length} targets`, 'ok');
+                        const data = await response.json();
+                        const aircraft = endpoint.parser(data);
+                        
+                        if (aircraft && aircraft.length > 0) {
+                            state.aircraftInView = aircraft;
+                            document.getElementById('aircraft-count').textContent = aircraft.length;
+                            updateStatus('api-status', `API: ${aircraft.length} targets (${endpoint.name})`, 'ok');
+                            debugLog(`Success! Found ${aircraft.length} aircraft via ${endpoint.name}`, 'success');
+                            success = true;
+                            state.apiSource = endpoint.name;
+                            break;
+                        }
+                    } catch (error) {
+                        debugLog(`${endpoint.name} failed: ${error.message}`, 'error');
+                    }
                 }
+
+                if (!success) {
+                    state.aircraftInView = generateMockData();
+                    document.getElementById('aircraft-count').textContent = state.aircraftInView.length;
+                    updateStatus('api-status', `API: ${state.aircraftInView.length} targets (MOCK)`, 'warning');
+                    debugLog(`All endpoints failed, using mock data`, 'warning');
+                }
+
             } catch (error) {
-                console.error('API error:', error);
+                debugLog(`API fetch error: ${error.message}`, 'error');
                 updateStatus('api-status', 'API: Error', 'error');
+                state.aircraftInView = generateMockData();
             }
+        }
+
+        // ==================== API PARSERS ====================
+        function parseOpenSkyAPI(data) {
+            if (!data.states) return [];
+            
+            return data.states
+                .map(flight => ({
+                    icao24: flight[0],
+                    callsign: (flight[1] || '').trim() || 'UNK',
+                    country: flight[2] || 'Unknown',
+                    lon: flight[5],
+                    lat: flight[6],
+                    altitude: flight[7] ? Math.round(flight[7] * 3.28084) : 0,
+                    velocity: flight[9] ? (flight[9] * 1.944).toFixed(0) : 0,
+                    heading: flight[10] ? Math.round(flight[10]) : 0,
+                    verticalRate: flight[11] ? (flight[11] * 196.85).toFixed(0) : 0
+                }))
+                .filter(f => f.lat && f.lon && f.lat !== null && f.lon !== null)
+                .map(f => ({
+                    ...f,
+                    distance: getDistance(state.userLat, state.userLon, f.lat, f.lon),
+                    bearing: getBearing(state.userLat, state.userLon, f.lat, f.lon),
+                    elevation: getElevation(state.userAlt, f.altitude)
+                }))
+                .filter(f => f.distance <= state.rangeMax);
+        }
+
+        function parseADSBExchangeAPI(data) {
+            if (!data.ac) return [];
+            
+            return data.ac
+                .map(flight => ({
+                    icao24: flight.icao,
+                    callsign: (flight.call || '').trim() || 'UNK',
+                    country: flight.country || 'Unknown',
+                    lon: flight.lon,
+                    lat: flight.lat,
+                    altitude: flight.alt_baro || flight.alt_geom || 0,
+                    velocity: flight.gs ? (flight.gs * 1.944).toFixed(0) : 0,
+                    heading: flight.track ? Math.round(flight.track) : 0,
+                    verticalRate: flight.baro_rate ? (flight.baro_rate * 196.85).toFixed(0) : 0
+                }))
+                .filter(f => f.lat && f.lon && f.lat !== null && f.lon !== null)
+                .map(f => ({
+                    ...f,
+                    distance: getDistance(state.userLat, state.userLon, f.lat, f.lon),
+                    bearing: getBearing(state.userLat, state.userLon, f.lat, f.lon),
+                    elevation: getElevation(state.userAlt, f.altitude)
+                }))
+                .filter(f => f.distance <= state.rangeMax);
+        }
+
+        // ==================== MOCK DATA FOR TESTING ====================
+        function generateMockData() {
+            const mockAircraft = [
+                { callsign: 'UAL456', lat: state.userLat + 0.02, lon: state.userLon + 0.01, altitude: 35000, velocity: 450, heading: 180, verticalRate: 1500 },
+                { callsign: 'SWA789', lat: state.userLat - 0.015, lon: state.userLon + 0.02, altitude: 28000, velocity: 420, heading: 270, verticalRate: -800 },
+                { callsign: 'DAL123', lat: state.userLat + 0.01, lon: state.userLon - 0.015, altitude: 32000, velocity: 480, heading: 90, verticalRate: 2000 },
+                { callsign: 'AAL999', lat: state.userLat - 0.025, lon: state.userLon - 0.01, altitude: 38000, velocity: 490, heading: 45, verticalRate: 500 }
+            ];
+
+            return mockAircraft.map(f => ({
+                ...f,
+                icao24: Math.random().toString(16).substr(2, 6),
+                country: 'USA',
+                distance: getDistance(state.userLat, state.userLon, f.lat, f.lon),
+                bearing: getBearing(state.userLat, state.userLon, f.lat, f.lon),
+                elevation: getElevation(state.userAlt, f.altitude)
+            }));
         }
 
         // ==================== DISTANCE & BEARING CALCULATIONS ====================
@@ -486,7 +642,7 @@
         }
 
         function getElevation(alt1Feet, alt2Feet) {
-            const altDiff = (alt2Feet - alt1Feet) / 5280; // convert to miles
+            const altDiff = (alt2Feet - alt1Feet) / 5280;
             const distance = state.aircraftInView[0]?.distance || 1;
             return Math.atan2(altDiff, distance) * (180 / Math.PI);
         }
@@ -534,11 +690,9 @@
                 const relativeYaw = (aircraft.bearing - state.heading + 360) % 360;
                 const relativePitch = aircraft.elevation - state.pitch;
 
-                // Map to screen coordinates
                 const screenX = cx + Math.sin((relativeYaw - 180) * Math.PI / 180) * 200;
                 const screenY = cy - relativePitch * 15;
 
-                // Check if on screen
                 if (screenX > 20 && screenX < canvas.width - 20 && 
                     screenY > 80 && screenY < canvas.height - 80) {
                     
@@ -547,11 +701,9 @@
                     ctx.fillStyle = isSelected ? 'rgba(255, 183, 0, 0.1)' : 'transparent';
                     ctx.lineWidth = isSelected ? 3 : 2;
 
-                    // Draw target box
                     ctx.fillRect(screenX - 15, screenY - 15, 30, 30);
                     ctx.strokeRect(screenX - 15, screenY - 15, 30, 30);
 
-                    // Draw info
                     ctx.fillStyle = ctx.strokeStyle;
                     ctx.font = 'bold 14px Courier New';
                     ctx.fillText(aircraft.callsign, screenX + 20, screenY - 10);
@@ -560,7 +712,6 @@
                     ctx.fillText(`${aircraft.distance.toFixed(1)}mi`, screenX + 20, screenY + 5);
                     ctx.fillText(`${aircraft.altitude}ft`, screenX + 20, screenY + 20);
 
-                    // Click handler
                     aircraft.screenX = screenX;
                     aircraft.screenY = screenY;
                 }
@@ -573,7 +724,6 @@
             const cyan = '#00f0ff';
             const gold = '#ffb700';
 
-            // Draw map background
             ctx.fillStyle = 'rgba(0, 20, 40, 0.3)';
             ctx.fillRect(40, 80, canvas.width - 80, canvas.height - 160);
             
@@ -593,13 +743,11 @@
                 ctx.stroke();
             }
 
-            // Draw user position
             ctx.fillStyle = gold;
             ctx.beginPath();
             ctx.arc(cx, cy, 8, 0, Math.PI * 2);
             ctx.fill();
 
-            // Draw aircraft
             ctx.fillStyle = cyan;
             const mapScale = (state.rangeMax / 2) / 100;
             
@@ -695,9 +843,13 @@
             }
         }
 
-        // ==================== START ====================
-        // Uncomment to auto-start without permission screen
-        // startApp();
+        // Auto-show debug log on load if debug mode
+        if (debugMode) {
+            document.getElementById('debug-log').style.display = 'block';
+            debugLog('Debug mode initialized', 'success');
+        } else {
+            document.getElementById('debug-log').style.display = 'none';
+        }
     </script>
 </body>
 </html>

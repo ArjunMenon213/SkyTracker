@@ -228,6 +228,49 @@
         .debug-success {
             color: #00ff00;
         }
+
+        /* Flight info popups - absolutely positioned on canvas */
+        .flight-popup {
+            position: absolute;
+            background: rgba(0, 20, 40, 0.95);
+            border: 2px solid #00f0ff;
+            border-radius: 5px;
+            padding: 10px;
+            font-size: 11px;
+            white-space: nowrap;
+            z-index: 150;
+            pointer-events: none;
+            min-width: 140px;
+        }
+
+        .flight-popup.selected {
+            border-color: #ffb700;
+            background: rgba(0, 20, 40, 0.99);
+            box-shadow: 0 0 20px rgba(255, 183, 0, 0.5);
+        }
+
+        .popup-title {
+            font-weight: bold;
+            color: #ffb700;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .popup-line {
+            color: #00f0ff;
+            margin: 3px 0;
+        }
+
+        .popup-line .label {
+            color: #00f0ff;
+            display: inline-block;
+            width: 40px;
+        }
+
+        .popup-line .value {
+            color: #ffb700;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -258,6 +301,9 @@
         <video id="video" autoplay playsinline></video>
         <canvas id="canvas-overlay"></canvas>
 
+        <!-- Flight popups will be inserted here dynamically -->
+        <div id="popups-container"></div>
+
         <!-- Top HUD Panel -->
         <div id="hud-top">
             <div class="hud-stat">
@@ -282,9 +328,9 @@
         <div id="controls">
             <div class="control-row"><span class="hud-label">RANGE</span></div>
             <div class="control-row">
-                <span id="range-display">15mi</span>
-                <button onclick="adjustRange(-5)">-</button>
-                <button onclick="adjustRange(5)">+</button>
+                <span id="range-display">50mi</span>
+                <button onclick="adjustRange(-10)">-</button>
+                <button onclick="adjustRange(10)">+</button>
             </div>
             <div class="control-row" style="margin-top: 15px;">
                 <button onclick="toggleMode()" style="width: 100%;">TOGGLE MAP</button>
@@ -340,10 +386,11 @@
             roll: 0,
             aircraftInView: [],
             selectedAircraft: null,
-            rangeMax: 15,
+            rangeMax: 50,     // Increased from 15 to show more aircraft
             mapMode: false,
             sensorReady: false,
-            apiSource: 'opensky' // fallback tracker
+            apiSource: 'opensky',
+            cameraActive: false
         };
 
         // ==================== DOM ELEMENTS ====================
@@ -351,6 +398,7 @@
         const canvas = document.getElementById('canvas-overlay');
         const ctx = canvas.getContext('2d');
         const permissionOverlay = document.getElementById('permission-overlay');
+        const popupsContainer = document.getElementById('popups-container');
 
         // ==================== CANVAS SETUP ====================
         function resizeCanvas() {
@@ -367,6 +415,7 @@
             
             try {
                 await requestCamera();
+                state.cameraActive = true;
                 updateStatus('camera-status', 'CAM: Active', 'ok');
                 debugLog('Camera initialized', 'success');
             } catch (e) {
@@ -651,6 +700,9 @@
         function renderLoop() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+            // Update popups for all aircraft
+            updateFlightPopups();
+
             if (state.mapMode) {
                 drawMapView();
             } else {
@@ -685,7 +737,29 @@
             ctx.lineTo(cx, cy + 40);
             ctx.stroke();
 
-            // Draw aircraft targets
+            // Draw altitude circles at different ranges
+            ctx.strokeStyle = 'rgba(0, 240, 255, 0.2)';
+            ctx.lineWidth = 1;
+            const ranges = [50, 100, 150];
+            ranges.forEach(range => {
+                ctx.beginPath();
+                ctx.arc(cx, cy, range, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+
+            // Draw bearing lines
+            ctx.strokeStyle = 'rgba(0, 240, 255, 0.1)';
+            for (let bearing = 0; bearing < 360; bearing += 45) {
+                const rad = bearing * Math.PI / 180;
+                const x = cx + Math.sin(rad) * 150;
+                const y = cy - Math.cos(rad) * 150;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            }
+
+            // Draw aircraft targets (for debugging)
             state.aircraftInView.forEach((aircraft, idx) => {
                 const relativeYaw = (aircraft.bearing - state.heading + 360) % 360;
                 const relativePitch = aircraft.elevation - state.pitch;
@@ -703,14 +777,6 @@
 
                     ctx.fillRect(screenX - 15, screenY - 15, 30, 30);
                     ctx.strokeRect(screenX - 15, screenY - 15, 30, 30);
-
-                    ctx.fillStyle = ctx.strokeStyle;
-                    ctx.font = 'bold 14px Courier New';
-                    ctx.fillText(aircraft.callsign, screenX + 20, screenY - 10);
-                    
-                    ctx.font = '12px Courier New';
-                    ctx.fillText(`${aircraft.distance.toFixed(1)}mi`, screenX + 20, screenY + 5);
-                    ctx.fillText(`${aircraft.altitude}ft`, screenX + 20, screenY + 20);
 
                     aircraft.screenX = screenX;
                     aircraft.screenY = screenY;
@@ -768,19 +834,48 @@
                     ctx.arc(mapX, mapY, isSelected ? 10 : 6, 0, Math.PI * 2);
                     ctx.fill();
 
-                    ctx.fillStyle = cyan;
-                    ctx.font = 'bold 12px Courier New';
-                    ctx.fillText(aircraft.callsign, mapX + 10, mapY + 4);
-                    
                     aircraft.screenX = mapX;
                     aircraft.screenY = mapY;
                 }
             });
         }
 
+        // ==================== FLIGHT POPUPS ====================
+        function updateFlightPopups() {
+            // Clear old popups
+            popupsContainer.innerHTML = '';
+
+            state.aircraftInView.forEach((aircraft, idx) => {
+                if (!aircraft.screenX || !aircraft.screenY) return;
+
+                const isSelected = state.selectedAircraft === idx;
+                
+                const popup = document.createElement('div');
+                popup.className = `flight-popup ${isSelected ? 'selected' : ''}`;
+                popup.style.left = (aircraft.screenX + 20) + 'px';
+                popup.style.top = (aircraft.screenY - 40) + 'px';
+                popup.style.cursor = 'pointer';
+                popup.id = `popup-${idx}`;
+
+                popup.innerHTML = `
+                    <div class="popup-title">${aircraft.callsign}</div>
+                    <div class="popup-line"><span class="label">ALT:</span> <span class="value">${aircraft.altitude}ft</span></div>
+                    <div class="popup-line"><span class="label">SPD:</span> <span class="value">${aircraft.velocity}kt</span></div>
+                    <div class="popup-line"><span class="label">HDG:</span> <span class="value">${aircraft.heading}°</span></div>
+                    <div class="popup-line"><span class="label">DIS:</span> <span class="value">${aircraft.distance.toFixed(1)}mi</span></div>
+                `;
+
+                popup.addEventListener('click', () => {
+                    state.selectedAircraft = state.selectedAircraft === idx ? null : idx;
+                });
+
+                popupsContainer.appendChild(popup);
+            });
+        }
+
         // ==================== CONTROLS ====================
         function adjustRange(delta) {
-            state.rangeMax = Math.max(5, Math.min(100, state.rangeMax + delta));
+            state.rangeMax = Math.max(5, Math.min(200, state.rangeMax + delta));
             document.getElementById('range-display').textContent = state.rangeMax + 'mi';
             fetchFlightData();
         }
@@ -793,54 +888,6 @@
         function updateStatus(elementId, message, type) {
             const el = document.getElementById(elementId);
             el.innerHTML = `<span class="status-${type}">${message}</span>`;
-        }
-
-        // ==================== CLICK HANDLER ====================
-        canvas.addEventListener('click', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const clickX = e.clientX - rect.left;
-            const clickY = e.clientY - rect.top;
-
-            state.aircraftInView.forEach((aircraft, idx) => {
-                if (aircraft.screenX && aircraft.screenY) {
-                    const dist = Math.hypot(clickX - aircraft.screenX, clickY - aircraft.screenY);
-                    if (dist < 30) {
-                        state.selectedAircraft = state.selectedAircraft === idx ? null : idx;
-                        updateFlightInfo();
-                    }
-                }
-            });
-        });
-
-        function updateFlightInfo() {
-            const infoEl = document.getElementById('selected-flight-info');
-            if (state.selectedAircraft !== null) {
-                const flight = state.aircraftInView[state.selectedAircraft];
-                infoEl.innerHTML = `
-                    <div class="hud-stat">
-                        <span class="hud-label">${flight.callsign}</span>
-                        <span class="hud-value">${flight.country}</span>
-                    </div>
-                    <div class="hud-stat">
-                        <span class="hud-label">ALT</span>
-                        <span class="hud-value">${flight.altitude}ft</span>
-                    </div>
-                    <div class="hud-stat">
-                        <span class="hud-label">SPD</span>
-                        <span class="hud-value">${flight.velocity}kt</span>
-                    </div>
-                    <div class="hud-stat">
-                        <span class="hud-label">HDG</span>
-                        <span class="hud-value">${flight.heading}°</span>
-                    </div>
-                    <div class="hud-stat">
-                        <span class="hud-label">DIST</span>
-                        <span class="hud-value">${flight.distance.toFixed(1)}mi</span>
-                    </div>
-                `;
-            } else {
-                infoEl.innerHTML = '';
-            }
         }
 
         // Auto-show debug log on load if debug mode
